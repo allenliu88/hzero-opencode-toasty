@@ -266,16 +266,16 @@ if ((Assert-ExitCode "install codex exits 0" 0 $r.ExitCode) -and
 }
 
 # Install codex writes notify as top-level key
-$tempProfile = Join-Path $env:TEMP ("toasty-test-" + [Guid]::NewGuid().ToString("N"))
+$tempDir = Join-Path $env:TEMP ("toasty-test-" + [Guid]::NewGuid().ToString("N"))
 try {
-    New-Item -ItemType Directory -Path (Join-Path $tempProfile ".codex") -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $tempDir ".codex") -Force | Out-Null
     @"
 [windows]
 sandbox = "unelevated"
-"@ | Set-Content -Path (Join-Path $tempProfile ".codex\config.toml")
+"@ | Set-Content -Path (Join-Path $tempDir ".codex\config.toml")
 
-    $r = Run-Toasty -Arguments @("--install", "codex") -Env @{ USERPROFILE = $tempProfile }
-    $config = Get-Content -Raw (Join-Path $tempProfile ".codex\config.toml")
+    $r = Run-Toasty -Arguments @("--install", "codex") -Env @{ USERPROFILE = $tempDir }
+    $config = Get-Content -Raw (Join-Path $tempDir ".codex\config.toml")
     $notifyIndex = $config.IndexOf("notify = [")
     $windowsIndex = $config.IndexOf("[windows]")
 
@@ -287,8 +287,8 @@ sandbox = "unelevated"
     }
 }
 finally {
-    if (Test-Path $tempProfile) {
-        Remove-Item -Path $tempProfile -Recurse -Force -ErrorAction SilentlyContinue
+    if (Test-Path $tempDir) {
+        Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
 

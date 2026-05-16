@@ -1194,11 +1194,13 @@ bool install_codex(const std::wstring& exePath) {
 
     backup_file(configPath);
 
+    const char* LINE_WHITESPACE = " \t\r";
     auto is_notify_key_line = [](const std::string& line) -> bool {
-        if (line.rfind("notify", 0) != 0) return false;
-        if (line.size() == 6) return true;
-        char next = line[6];
-        return next == ' ' || next == '\t' || next == '=';
+        const std::string notifyKey = "notify";
+        if (line.rfind(notifyKey, 0) != 0) return false;
+        size_t pos = notifyKey.size();
+        while (pos < line.size() && (line[pos] == ' ' || line[pos] == '\t')) pos++;
+        return pos < line.size() && line[pos] == '=';
     };
 
     // Remove any existing toasty notify lines (including older incorrect section placement)
@@ -1209,9 +1211,9 @@ bool install_codex(const std::wstring& exePath) {
         size_t lineLen = (lineEnd == std::string::npos) ? (content.size() - pos) : (lineEnd - pos);
         std::string line = content.substr(pos, lineLen);
 
-        size_t firstNonWs = line.find_first_not_of(" \t\r");
+        size_t firstNonWs = line.find_first_not_of(LINE_WHITESPACE);
         std::string trimmed = (firstNonWs == std::string::npos) ? "" : line.substr(firstNonWs);
-        bool isToastyNotify = is_notify_key_line(trimmed) && line.find("toasty") != std::string::npos;
+        bool isToastyNotify = is_notify_key_line(trimmed) && trimmed.find("toasty") != std::string::npos;
 
         if (!isToastyNotify) {
             cleaned += line;
@@ -1231,7 +1233,7 @@ bool install_codex(const std::wstring& exePath) {
         size_t lineLen = (lineEnd == std::string::npos) ? (content.size() - pos) : (lineEnd - pos);
         std::string line = content.substr(pos, lineLen);
 
-        size_t firstNonWs = line.find_first_not_of(" \t\r");
+        size_t firstNonWs = line.find_first_not_of(LINE_WHITESPACE);
         if (firstNonWs != std::string::npos && line[firstNonWs] == '[') {
             firstTablePos = pos;
             break;
@@ -1251,7 +1253,7 @@ bool install_codex(const std::wstring& exePath) {
         size_t lineLen = (lineEnd == std::string::npos) ? (content.size() - pos) : (lineEnd - pos);
         std::string line = content.substr(pos, lineLen);
 
-        size_t firstNonWs = line.find_first_not_of(" \t\r");
+        size_t firstNonWs = line.find_first_not_of(LINE_WHITESPACE);
         std::string trimmed = (firstNonWs == std::string::npos) ? "" : line.substr(firstNonWs);
         if (is_notify_key_line(trimmed)) {
             topNotifyStart = pos;
