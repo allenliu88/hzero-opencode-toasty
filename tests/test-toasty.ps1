@@ -52,6 +52,17 @@ function Assert-OutputNotContains {
     return $true
 }
 
+function Assert-Condition {
+    param([string]$Name, [bool]$Condition, [string]$Message)
+    if (-not $Condition) {
+        $script:failed++
+        $script:errors += "FAIL: $Name ($Message)"
+        Write-Host "  FAIL: $Name ($Message)" -ForegroundColor Red
+        return $false
+    }
+    return $true
+}
+
 function Pass {
     param([string]$Name)
     $script:passed++
@@ -252,6 +263,146 @@ if ((Assert-ExitCode "install codex exits 0" 0 $r.ExitCode) -and
     (Assert-OutputContains "install codex path" $r.Stdout "config.toml") -and
     (Assert-OutputContains "install codex hook" $r.Stdout "Hook type: notify")) {
     Pass "install codex --dry-run"
+}
+
+# Install codex config mutation regression cases
+$tempDir = Join-Path $env:TEMP ("toasty-test-" + [Guid]::NewGuid().ToString("N"))
+try {
+    New-Item -ItemType Directory -Path (Join-Path $tempDir ".codex") -Force | Out-Null
+    $configPath = Join-Path $tempDir ".codex\config.toml"
+
+    function Get-NotifyCount {
+        param([string]$Config)
+        return ([regex]::Matches($Config, "^\s*notify\s*=", [System.Text.RegularExpressions.RegexOptions]::Multiline)).Count
+    }
+
+    function Get-TomlTableIndex {
+        param([string]$Config, [string]$TableName)
+        $match = [regex]::Match($Config, "^\s*\[$([regex]::Escape($TableName))\]\s*(?:#.*)?$", [System.Text.RegularExpressions.RegexOptions]::Multiline)
+        if ($match.Success) { return $match.Index }
+        return -1
+    }
+
+    function Invoke-CodexInstallCase {
+        param(
+            [string]$Name,
+            [string]$InitialConfig,
+            [bool]$UseBom = $false,
+            [scriptblock]$Validate
+        )
+
+        if ($UseBom) {
+            $payload = [System.Text.Encoding]::UTF8.GetBytes($InitialConfig)
+            [System.IO.File]::WriteAllBytes($configPath, ([byte[]](0xEF, 0xBB, 0xBF) + $payload))
+        } else {
+            [System.IO.File]::WriteAllText($configPath, $InitialConfig, [System.Text.UTF8Encoding]::new($false))
+        }
+
+        $r = Run-Toasty -Arguments @("--install", "codex") -Env @{ USERPROFILE = $tempDir }
+        $config = Get-Content -Raw $configPath
+        $bytes = [System.IO.File]::ReadAllBytes($configPath)
+
+        if ((Assert-ExitCode "$Name exits 0" 0 $r.ExitCode) -and (& $Validate $config $bytes)) {
+            Pass $Name
+        }
+    }
+
+    Invoke-CodexInstallCase -Name "install codex writes top-level notify before [windows]" -InitialConfig @"
+[windows]
+sandbox = "unelevated"
+"@ -Validate {
+        param($config, $bytes)
+        $notifyIndex = $config.IndexOf("notify = [")
+        $windowsIndex = $config.IndexOf("[windows]")
+        return (Assert-Condition "codex has notify before [windows]" ($notifyIndex -ge 0 -and $windowsIndex -ge 0 -and $notifyIndex -lt $windowsIndex) "notify should be before [windows]")
+    }
+
+    Invoke-CodexInstallCase -Name "install codex preserves UTF-8 BOM and top-level notify order" -InitialConfig @"
+[windows]
+sandbox = "unelevated"
+"@ -UseBom $true -Validate {
+        param($config, $bytes)
+        $notifyIndex = $config.IndexOf("notify = [")
+        $windowsIndex = $config.IndexOf("[windows]")
+        return (Assert-Condition "codex preserves BOM" ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) "UTF-8 BOM should be preserved") -and
+               (Assert-Condition "codex BOM notify order" ($notifyIndex -ge 0 -and $windowsIndex -ge 0 -and $notifyIndex -lt $windowsIndex) "notify should be before first table")
+    }
+
+    Invoke-CodexInstallCase -Name "install codex ignores comments that mention [section]" -InitialConfig @"
+# comment mentioning [windows] should not count as table
+
+[windows]
+sandbox = "unelevated"
+"@ -Validate {
+        param($config, $bytes)
+        $commentIndex = $config.IndexOf("# comment mentioning [windows]")
+        $notifyIndex = $config.IndexOf("notify = [")
+        $windowsIndex = Get-TomlTableIndex $config "windows"
+        return (Assert-Condition "codex keeps leading comment first" ($commentIndex -ge 0 -and $notifyIndex -gt $commentIndex) "notify should not be inserted before leading comment text") -and
+               (Assert-Condition "codex inserts before first real table" ($notifyIndex -lt $windowsIndex) "notify should be before [windows] table")
+    }
+
+    Invoke-CodexInstallCase -Name "install codex keeps existing top-level keys and inserts notify before table" -InitialConfig @"
+theme = "dark"
+model = "o3"
+
+[windows]
+sandbox = "unelevated"
+"@ -Validate {
+        param($config, $bytes)
+        $modelIndex = $config.IndexOf('model = "o3"')
+        $notifyIndex = $config.IndexOf("notify = [")
+        $windowsIndex = $config.IndexOf("[windows]")
+        return (Assert-Condition "codex keeps top-level keys" ($modelIndex -ge 0) "existing top-level keys should be preserved") -and
+               (Assert-Condition "codex inserts notify after existing top keys" ($notifyIndex -gt $modelIndex) "notify should follow existing top-level keys") -and
+               (Assert-Condition "codex inserts notify before table when keys exist" ($notifyIndex -lt $windowsIndex) "notify should be before [windows]")
+    }
+
+    Invoke-CodexInstallCase -Name "install codex replaces existing top-level notify" -InitialConfig @"
+notify = ["C:\\old\\notify.exe", "Old title"]
+
+[windows]
+sandbox = "unelevated"
+"@ -Validate {
+        param($config, $bytes)
+        return (Assert-Condition "codex has single notify after replace" ((Get-NotifyCount $config) -eq 1) "notify should be replaced, not duplicated") -and
+               (Assert-Condition "codex notify uses codex title" ($config.Contains('"Codex finished"')) "notify should be updated to Codex finished")
+    }
+
+    Invoke-CodexInstallCase -Name "install codex removes old nested toasty notify and writes top-level notify" -InitialConfig @"
+[windows]
+notify = ["C:\\tools\\toasty.exe", "Codex finished", "-t", "Codex"]
+sandbox = "unelevated"
+"@ -Validate {
+        param($config, $bytes)
+        $notifyIndex = $config.IndexOf("notify = [")
+        $windowsIndex = $config.IndexOf("[windows]")
+        $windowsSectionContent = if ($windowsIndex -ge 0) { $config.Substring($windowsIndex) } else { "" }
+        return (Assert-Condition "codex nested notify removed" ((Get-NotifyCount $config) -eq 1) "old nested toasty notify should be removed") -and
+               (Assert-Condition "codex nested notify moved top-level" ($notifyIndex -ge 0 -and $windowsIndex -ge 0 -and $notifyIndex -lt $windowsIndex) "notify should be top-level before [windows]") -and
+               (Assert-Condition "codex no notify remains in windows section" (-not ($windowsSectionContent -match "(?m)^\s*notify\s*=")) "windows section should not contain notify")
+    }
+
+    [System.IO.File]::WriteAllText($configPath, @"
+[windows]
+sandbox = "unelevated"
+"@, [System.Text.UTF8Encoding]::new($false))
+    $firstRun = Run-Toasty -Arguments @("--install", "codex") -Env @{ USERPROFILE = $tempDir }
+    $firstConfig = Get-Content -Raw $configPath
+    $secondRun = Run-Toasty -Arguments @("--install", "codex") -Env @{ USERPROFILE = $tempDir }
+    $secondConfig = Get-Content -Raw $configPath
+
+    if ((Assert-ExitCode "install codex idempotent first run exits 0" 0 $firstRun.ExitCode) -and
+        (Assert-ExitCode "install codex idempotent second run exits 0" 0 $secondRun.ExitCode) -and
+        (Assert-Condition "install codex idempotent no duplicate notify" ((Get-NotifyCount $secondConfig) -eq 1) "re-run should not duplicate notify") -and
+        (Assert-Condition "install codex idempotent stable config" ($firstConfig -eq $secondConfig) "re-run should leave config unchanged")) {
+        Pass "install codex is idempotent with no duplicate notify"
+    }
+}
+finally {
+    if (Test-Path $tempDir) {
+        Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
 }
 
 # Install all (no agent specified)

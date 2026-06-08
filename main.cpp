@@ -1160,7 +1160,7 @@ bool install_copilot(const std::wstring& exePath) {
 }
 
 // Install hook for OpenAI Codex CLI
-// Codex uses TOML config at ~/.codex/config.toml with notify = "command"
+// Codex uses TOML config at ~/.codex/config.toml with top-level notify = [..]
 bool install_codex(const std::wstring& exePath) {
     std::wstring configDir = expand_env(L"%USERPROFILE%\\.codex");
     std::wstring configPath = configDir + L"\\config.toml";
@@ -1187,31 +1187,103 @@ bool install_codex(const std::wstring& exePath) {
     }
 
     std::string notifyLine = "notify = [\"" + escapedPath + "\", \"Codex finished\", \"-t\", \"Codex\"]\n";
-
-    if (content.empty()) {
-        // New file
-        return write_file(configPath, notifyLine);
+    std::string bomPrefix;
+    if (content.size() >= 3 &&
+        static_cast<unsigned char>(content[0]) == 0xEF &&
+        static_cast<unsigned char>(content[1]) == 0xBB &&
+        static_cast<unsigned char>(content[2]) == 0xBF) {
+        bomPrefix = content.substr(0, 3);
+        content.erase(0, 3);
     }
 
-    // Check if notify is already set
-    if (content.find("toasty") != std::string::npos) {
-        return true; // Already installed
+    if (content.empty()) {
+        return write_file(configPath, bomPrefix + notifyLine);
     }
 
     backup_file(configPath);
 
-    // Replace existing notify line or append
-    size_t notifyPos = content.find("notify");
-    if (notifyPos != std::string::npos) {
-        // Find end of line
-        size_t lineEnd = content.find('\n', notifyPos);
-        if (lineEnd == std::string::npos) lineEnd = content.size();
-        else lineEnd++; // include the newline
-        content.replace(notifyPos, lineEnd - notifyPos, notifyLine);
+    const char* LINE_WHITESPACE = " \t\r";
+    auto is_notify_key_line = [](const std::string& line) -> bool {
+        const std::string notifyKey = "notify";
+        if (line.rfind(notifyKey, 0) != 0) return false;
+        size_t pos = notifyKey.size();
+        while (pos < line.size() && (line[pos] == ' ' || line[pos] == '\t')) pos++;
+        return pos < line.size() && line[pos] == '=';
+    };
+
+    // Remove any existing toasty notify lines (including older incorrect section placement)
+    std::string cleaned;
+    size_t pos = 0;
+    while (pos < content.size()) {
+        size_t lineEnd = content.find('\n', pos);
+        size_t lineLen = (lineEnd == std::string::npos) ? (content.size() - pos) : (lineEnd - pos);
+        std::string line = content.substr(pos, lineLen);
+
+        size_t firstNonWs = line.find_first_not_of(LINE_WHITESPACE);
+        std::string trimmed = (firstNonWs == std::string::npos) ? "" : line.substr(firstNonWs);
+        bool isToastyNotify = is_notify_key_line(trimmed) && trimmed.find("toasty") != std::string::npos;
+
+        if (!isToastyNotify) {
+            cleaned += line;
+            if (lineEnd != std::string::npos) cleaned += '\n';
+        }
+
+        if (lineEnd == std::string::npos) break;
+        pos = lineEnd + 1;
+    }
+    content = cleaned;
+
+    // Find first TOML table so notify can be inserted as top-level key
+    size_t firstTablePos = std::string::npos;
+    pos = 0;
+    while (pos < content.size()) {
+        size_t lineEnd = content.find('\n', pos);
+        size_t lineLen = (lineEnd == std::string::npos) ? (content.size() - pos) : (lineEnd - pos);
+        std::string line = content.substr(pos, lineLen);
+
+        size_t firstNonWs = line.find_first_not_of(LINE_WHITESPACE);
+        if (firstNonWs != std::string::npos && line[firstNonWs] == '[') {
+            firstTablePos = pos;
+            break;
+        }
+
+        if (lineEnd == std::string::npos) break;
+        pos = lineEnd + 1;
+    }
+
+    // Replace top-level notify if present; otherwise insert before first table
+    size_t searchLimit = (firstTablePos == std::string::npos) ? content.size() : firstTablePos;
+    size_t topNotifyStart = std::string::npos;
+    size_t topNotifyEnd = std::string::npos;
+    pos = 0;
+    while (pos < searchLimit) {
+        size_t lineEnd = content.find('\n', pos);
+        size_t lineLen = (lineEnd == std::string::npos) ? (content.size() - pos) : (lineEnd - pos);
+        std::string line = content.substr(pos, lineLen);
+
+        size_t firstNonWs = line.find_first_not_of(LINE_WHITESPACE);
+        std::string trimmed = (firstNonWs == std::string::npos) ? "" : line.substr(firstNonWs);
+        if (is_notify_key_line(trimmed)) {
+            topNotifyStart = pos;
+            topNotifyEnd = (lineEnd == std::string::npos) ? content.size() : (lineEnd + 1);
+            break;
+        }
+
+        if (lineEnd == std::string::npos) break;
+        pos = lineEnd + 1;
+    }
+
+    if (topNotifyStart != std::string::npos) {
+        content.replace(topNotifyStart, topNotifyEnd - topNotifyStart, notifyLine);
+    } else if (firstTablePos != std::string::npos) {
+        content.insert(firstTablePos, notifyLine);
     } else {
-        // Append
         if (!content.empty() && content.back() != '\n') content += '\n';
         content += notifyLine;
+    }
+
+    if (!bomPrefix.empty()) {
+        content.insert(0, bomPrefix);
     }
 
     return write_file(configPath, content);
