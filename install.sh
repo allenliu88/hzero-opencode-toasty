@@ -27,7 +27,9 @@ if [[ "$_uname" == MINGW* ]] || [[ "$_uname" == MSYS* ]] || [[ "$_uname" == CYGW
 elif [[ -n "${WSL_DISTRO_NAME:-}" ]] || grep -qi "microsoft\|wsl" /proc/version 2>/dev/null; then
     ENV_TYPE="wsl"
 elif command -v cmd.exe &>/dev/null; then
-    # Fallback: some Windows shell environments don't set the above
+    # Fallback for Windows shell environments (e.g. MSYS2 older builds) that do
+    # not set MINGW*/MSYS in uname but still have cmd.exe on PATH via interop.
+    # PATH conversion defaults to cygpath if available, otherwise $HOME.
     ENV_TYPE="gitbash"
 else
     fail "toasty is a Windows application."
@@ -163,14 +165,18 @@ if [[ -n "$checksum_url" ]]; then
     step "Verifying SHA256 checksum ..."
     if curl -fsSL -H "User-Agent: toasty-installer" "$checksum_url" -o "$tmp_sha" 2>/dev/null; then
         # Checksum file may be "<hash>  <filename>" or just "<hash>"
-        expected_sha="$(grep -i "${asset_name}" "$tmp_sha" 2>/dev/null | awk '{print $1}' || awk 'NR==1{print $1}' "$tmp_sha")"
+        if grep -qi "${asset_name}" "$tmp_sha" 2>/dev/null; then
+            expected_sha="$(grep -i "${asset_name}" "$tmp_sha" | awk '{print $1}')"
+        else
+            expected_sha="$(awk 'NR==1{print $1}' "$tmp_sha")"
+        fi
         actual_sha="$(sha256sum "$tmp_file" | awk '{print $1}')"
-        if [[ "${expected_sha,,}" != "${actual_sha,,}" ]]; then
+        # Use tr for lowercase comparison — compatible with bash 3.x
+        if [[ "$(echo "$expected_sha" | tr '[:upper:]' '[:lower:]')" != "$(echo "$actual_sha" | tr '[:upper:]' '[:lower:]')" ]]; then
             fail "SHA256 checksum mismatch — aborting!"
             fail "  Expected : $expected_sha"
             fail "  Actual   : $actual_sha"
-            rm -f "$tmp_file"
-            exit 1
+            exit 1  # trap handles temp file cleanup
         fi
         ok "SHA256 verified ($actual_sha)"
     else
