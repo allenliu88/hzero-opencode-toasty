@@ -276,6 +276,13 @@ try {
         return ([regex]::Matches($Config, "^\s*notify\s*=", [System.Text.RegularExpressions.RegexOptions]::Multiline)).Count
     }
 
+    function Get-TomlTableIndex {
+        param([string]$Config, [string]$TableName)
+        $match = [regex]::Match($Config, "^\s*\[$([regex]::Escape($TableName))\]\s*(?:#.*)?$", [System.Text.RegularExpressions.RegexOptions]::Multiline)
+        if ($match.Success) { return $match.Index }
+        return -1
+    }
+
     function Invoke-CodexInstallCase {
         param(
             [string]$Name,
@@ -330,7 +337,7 @@ sandbox = "unelevated"
         param($config, $bytes)
         $commentIndex = $config.IndexOf("# comment mentioning [windows]")
         $notifyIndex = $config.IndexOf("notify = [")
-        $windowsIndex = $config.IndexOf("[windows]")
+        $windowsIndex = Get-TomlTableIndex $config "windows"
         return (Assert-Condition "codex keeps leading comment first" ($commentIndex -ge 0 -and $notifyIndex -gt $commentIndex) "notify should not be inserted before leading comment text") -and
                (Assert-Condition "codex inserts before first real table" ($notifyIndex -lt $windowsIndex) "notify should be before [windows] table")
     }
