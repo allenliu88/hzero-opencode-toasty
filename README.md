@@ -20,7 +20,7 @@ curl -fsSL https://raw.githubusercontent.com/shanselman/toasty/main/install.sh |
 
 Both scripts:
 - Download the latest signed release for your architecture (x64 or ARM64)
-- Verify the Authenticode signature (PowerShell) or use HTTPS integrity (bash)
+- Verify integrity: Authenticode signature (PowerShell) or SHA256 checksum from release assets with HTTPS fallback (bash)
 - Install to `~/.toasty` and add it to your `PATH`
 - Support upgrades — re-run anytime to update
 
