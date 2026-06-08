@@ -1187,9 +1187,17 @@ bool install_codex(const std::wstring& exePath) {
     }
 
     std::string notifyLine = "notify = [\"" + escapedPath + "\", \"Codex finished\", \"-t\", \"Codex\"]\n";
+    std::string bomPrefix;
+    if (content.size() >= 3 &&
+        static_cast<unsigned char>(content[0]) == 0xEF &&
+        static_cast<unsigned char>(content[1]) == 0xBB &&
+        static_cast<unsigned char>(content[2]) == 0xBF) {
+        bomPrefix = content.substr(0, 3);
+        content.erase(0, 3);
+    }
 
     if (content.empty()) {
-        return write_file(configPath, notifyLine);
+        return write_file(configPath, bomPrefix + notifyLine);
     }
 
     backup_file(configPath);
@@ -1272,6 +1280,10 @@ bool install_codex(const std::wstring& exePath) {
     } else {
         if (!content.empty() && content.back() != '\n') content += '\n';
         content += notifyLine;
+    }
+
+    if (!bomPrefix.empty()) {
+        content.insert(0, bomPrefix);
     }
 
     return write_file(configPath, content);
