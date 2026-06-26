@@ -58,7 +58,7 @@ Windows toast notifications require an AppUserModelId (AUMID) to identify the se
 
 Toasty automatically creates this shortcut on first use at:
 ```
-%APPDATA%\Microsoft\Windows\Start Menu\Programs\Toasty.lnk
+%APPDATA%\Microsoft\Windows\Start Menu\Programs\Notification.lnk
 ```
 
 ## Click-to-Focus Feature

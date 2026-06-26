@@ -12,6 +12,17 @@ toasty "Hello World" -t "Toasty"
 
 That's it. Toasty auto-registers on first run.
 
+## Build
+
+```powershell
+## 构建x64产物
+make -S . -B build -G "Visual Studio 17 2022" -A x64
+cmake --build build --config Release
+
+## 验证
+build\Release\toasty.exe "Hello World" -t "飞码"
+```
+
 ## Usage
 
 ```

@@ -29,10 +29,12 @@ using namespace Windows::Data::Json;
 using namespace Windows::UI::Notifications;
 namespace fs = std::filesystem;
 
-const wchar_t* APP_ID = L"Toasty.CLI.Notification";
-const wchar_t* APP_NAME = L"Toasty";
+const wchar_t* APP_ID = L"Notification.CLI.Notification";
+const wchar_t* APP_NAME = L"Notification";
 const wchar_t* PROTOCOL_NAME = L"toasty";
 const wchar_t* TOASTY_VERSION = L"0.7";
+const wchar_t* SHORTCUT_NAME = L"Notification.lnk";
+const wchar_t* LEGACY_SHORTCUT_NAME = L"Toasty.lnk";
 
 // Global flags
 bool g_dryRun = false;
@@ -1541,7 +1543,7 @@ bool is_codex_installed() {
 // Show installation status
 void show_status() {
     std::wcout << L"Installation status:\n\n";
-    
+      
     bool claudeDetected = detect_claude();
     bool geminiDetected = detect_gemini();
     bool copilotDetected = detect_copilot();
@@ -1745,7 +1747,9 @@ bool create_shortcut() {
         return false;
     }
 
-    std::wstring shortcutPath = std::wstring(startMenuPath) + L"\\Toasty.lnk";
+    std::wstring shortcutDir(startMenuPath);
+    std::wstring shortcutPath = shortcutDir + L"\\" + SHORTCUT_NAME;
+    DeleteFileW((shortcutDir + L"\\" + LEGACY_SHORTCUT_NAME).c_str());
 
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 
@@ -1758,7 +1762,7 @@ bool create_shortcut() {
     }
 
     shellLink->SetPath(exePath);
-    shellLink->SetDescription(L"Toasty - Toast Notification CLI");
+    shellLink->SetDescription(L"Notification - Toast Notification CLI");
 
     IPropertyStore* propStore = nullptr;
     hr = shellLink->QueryInterface(IID_IPropertyStore, (void**)&propStore);
@@ -1784,6 +1788,8 @@ bool create_shortcut() {
     CoUninitialize();
 
     if (SUCCEEDED(hr)) {
+        SHChangeNotify(SHCNE_CREATE, SHCNF_PATHW, shortcutPath.c_str(), nullptr);
+        SHChangeNotify(SHCNE_UPDATEDIR, SHCNF_PATHW, shortcutDir.c_str(), nullptr);
         // Also register the protocol handler for click-to-focus
         register_protocol();
         std::wcout << L"Registered! Shortcut created at:\n" << shortcutPath << L"\n";
@@ -1797,7 +1803,7 @@ bool is_registered() {
     if (FAILED(SHGetFolderPathW(nullptr, CSIDL_PROGRAMS, nullptr, 0, startMenuPath))) {
         return false;
     }
-    std::wstring shortcutPath = std::wstring(startMenuPath) + L"\\Toasty.lnk";
+    std::wstring shortcutPath = std::wstring(startMenuPath) + L"\\" + SHORTCUT_NAME;
     return GetFileAttributesW(shortcutPath.c_str()) != INVALID_FILE_ATTRIBUTES;
 }
 
@@ -1805,10 +1811,8 @@ bool ensure_registered() {
     // Always ensure protocol handler is registered for click-to-focus
     register_protocol();
 
-    if (is_registered()) {
-        return true;
-    }
-    // Silently self-register
+    // Refresh the shortcut every run. This keeps AUMID and target path valid when the exe
+    // is copied to another machine or moved after first registration.
     wchar_t exePath[MAX_PATH];
     GetModuleFileNameW(nullptr, exePath, MAX_PATH);
 
@@ -1817,7 +1821,9 @@ bool ensure_registered() {
         return false;
     }
 
-    std::wstring shortcutPath = std::wstring(startMenuPath) + L"\\Toasty.lnk";
+    std::wstring shortcutDir(startMenuPath);
+    std::wstring shortcutPath = shortcutDir + L"\\" + SHORTCUT_NAME;
+    DeleteFileW((shortcutDir + L"\\" + LEGACY_SHORTCUT_NAME).c_str());
 
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 
@@ -1830,7 +1836,7 @@ bool ensure_registered() {
     }
 
     shellLink->SetPath(exePath);
-    shellLink->SetDescription(L"Toasty - Toast Notification CLI");
+    shellLink->SetDescription(L"Notification - Toast Notification CLI");
 
     IPropertyStore* propStore = nullptr;
     hr = shellLink->QueryInterface(IID_IPropertyStore, (void**)&propStore);
@@ -1856,6 +1862,8 @@ bool ensure_registered() {
     CoUninitialize();
 
     if (SUCCEEDED(hr)) {
+        SHChangeNotify(SHCNE_CREATE, SHCNF_PATHW, shortcutPath.c_str(), nullptr);
+        SHChangeNotify(SHCNE_UPDATEDIR, SHCNF_PATHW, shortcutDir.c_str(), nullptr);
         // Also register the protocol handler for click-to-focus
         register_protocol();
     }
@@ -2074,12 +2082,19 @@ int wmain(int argc, wchar_t* argv[]) {
 
     try {
         // Auto-register if needed
-        ensure_registered();
+        if (!ensure_registered()) {
+            std::wcerr << L"Error: Failed to register app for Windows notifications. Try running --register.\n";
+            return 1;
+        }
 
         init_apartment();
 
         // Set our AppUserModelId for this process
-        SetCurrentProcessExplicitAppUserModelID(APP_ID);
+        HRESULT appIdResult = SetCurrentProcessExplicitAppUserModelID(APP_ID);
+        if (FAILED(appIdResult)) {
+            std::wcerr << L"Error: Failed to set AppUserModelID. HRESULT=0x" << std::hex << appIdResult << std::dec << L"\n";
+            return 1;
+        }
 
         // Save the terminal window handle for click-to-focus
         // Walk process tree to find the actual terminal/IDE window
