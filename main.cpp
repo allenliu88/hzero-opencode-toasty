@@ -414,187 +414,6 @@ void send_ntfy_notification(const std::wstring& title, const std::wstring& messa
     WinHttpCloseHandle(hSession);
 }
 
-// Check if we should check for updates (throttle to once per day)
-bool should_check_for_updates() {
-    HKEY hKey;
-    std::wstring regKey = std::wstring(L"Software\\") + APP_NAME;
-
-    LONG result = RegOpenKeyExW(HKEY_CURRENT_USER, regKey.c_str(), 0, KEY_READ, &hKey);
-    if (result != ERROR_SUCCESS) return true;  // No key yet, check
-
-    FILETIME lastCheck = {};
-    DWORD size = sizeof(FILETIME);
-    result = RegQueryValueExW(hKey, L"LastUpdateCheck", nullptr, nullptr, (BYTE*)&lastCheck, &size);
-    RegCloseKey(hKey);
-
-    if (result != ERROR_SUCCESS) return true;  // No value yet, check
-
-    // Get current time
-    FILETIME now;
-    GetSystemTimeAsFileTime(&now);
-
-    // Convert to ULARGE_INTEGER for arithmetic (100-nanosecond intervals)
-    ULARGE_INTEGER ulNow, ulLast;
-    ulNow.LowPart = now.dwLowDateTime;
-    ulNow.HighPart = now.dwHighDateTime;
-    ulLast.LowPart = lastCheck.dwLowDateTime;
-    ulLast.HighPart = lastCheck.dwHighDateTime;
-
-    // 24 hours in 100-nanosecond intervals
-    ULONGLONG dayInterval = 24ULL * 60 * 60 * 10000000;
-    return (ulNow.QuadPart - ulLast.QuadPart) >= dayInterval;
-}
-
-// Save the last update check timestamp
-void save_update_check_time() {
-    HKEY hKey;
-    std::wstring regKey = std::wstring(L"Software\\") + APP_NAME;
-
-    LONG result = RegCreateKeyExW(HKEY_CURRENT_USER, regKey.c_str(), 0, nullptr,
-                                   REG_OPTION_NON_VOLATILE, KEY_WRITE, nullptr, &hKey, nullptr);
-    if (result != ERROR_SUCCESS) return;
-
-    FILETIME now;
-    GetSystemTimeAsFileTime(&now);
-    RegSetValueExW(hKey, L"LastUpdateCheck", 0, REG_BINARY, (BYTE*)&now, sizeof(FILETIME));
-    RegCloseKey(hKey);
-}
-
-// Compare version strings (e.g., "0.3" vs "0.4")
-// Returns true if remoteVersion is newer than localVersion
-bool is_newer_version(const std::wstring& localVersion, const std::wstring& remoteVersion) {
-    // Strip leading 'v' if present
-    std::wstring local = localVersion;
-    std::wstring remote = remoteVersion;
-    if (!local.empty() && (local[0] == L'v' || local[0] == L'V')) local = local.substr(1);
-    if (!remote.empty() && (remote[0] == L'v' || remote[0] == L'V')) remote = remote.substr(1);
-
-    // Parse major.minor
-    auto parse = [](const std::wstring& v, int& major, int& minor) {
-        major = 0; minor = 0;
-        size_t dot = v.find(L'.');
-        if (dot != std::wstring::npos) {
-            try {
-                major = std::stoi(v.substr(0, dot));
-                minor = std::stoi(v.substr(dot + 1));
-            } catch (...) {}
-        } else {
-            try { major = std::stoi(v); } catch (...) {}
-        }
-    };
-
-    int localMajor, localMinor, remoteMajor, remoteMinor;
-    parse(local, localMajor, localMinor);
-    parse(remote, remoteMajor, remoteMinor);
-
-    if (remoteMajor > localMajor) return true;
-    if (remoteMajor == localMajor && remoteMinor > localMinor) return true;
-    return false;
-}
-
-// Check GitHub releases for a newer version (non-blocking, throttled)
-// Returns true if an update toast was shown
-bool check_for_updates() {
-    if (!should_check_for_updates()) return false;
-
-    save_update_check_time();  // Save now so we don't retry on failure
-
-    // Hit GitHub API: GET /repos/shanselman/toasty/releases/latest
-    HINTERNET hSession = WinHttpOpen(L"Toasty/1.0",
-        WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-    if (!hSession) return false;
-
-    WinHttpSetTimeouts(hSession, 3000, 3000, 5000, 5000);
-
-    HINTERNET hConnect = WinHttpConnect(hSession, L"api.github.com", INTERNET_DEFAULT_HTTPS_PORT, 0);
-    if (!hConnect) {
-        WinHttpCloseHandle(hSession);
-        return false;
-    }
-
-    HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"GET",
-        L"/repos/shanselman/toasty/releases/latest",
-        nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
-    if (!hRequest) {
-        WinHttpCloseHandle(hConnect);
-        WinHttpCloseHandle(hSession);
-        return false;
-    }
-
-    // GitHub API requires User-Agent
-    WinHttpAddRequestHeaders(hRequest, L"Accept: application/vnd.github+json", (DWORD)-1, WINHTTP_ADDREQ_FLAG_ADD);
-
-    BOOL sent = WinHttpSendRequest(hRequest,
-        WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0);
-
-    bool updateAvailable = false;
-
-    if (sent && WinHttpReceiveResponse(hRequest, nullptr)) {
-        // Read response body
-        std::string responseBody;
-        DWORD bytesRead = 0;
-        DWORD bytesAvailable = 0;
-
-        while (WinHttpQueryDataAvailable(hRequest, &bytesAvailable) && bytesAvailable > 0) {
-            std::vector<char> buffer(bytesAvailable);
-            if (WinHttpReadData(hRequest, buffer.data(), bytesAvailable, &bytesRead)) {
-                responseBody.append(buffer.data(), bytesRead);
-            }
-            // Cap response size to prevent memory issues
-            if (responseBody.size() > 32768) break;
-        }
-
-        // Parse tag_name from JSON response using WinRT JSON parser
-        try {
-            int wideSize = MultiByteToWideChar(CP_UTF8, 0, responseBody.c_str(), -1, nullptr, 0);
-            if (wideSize > 0) {
-                std::wstring wideResponse(wideSize - 1, 0);
-                MultiByteToWideChar(CP_UTF8, 0, responseBody.c_str(), -1, &wideResponse[0], wideSize);
-
-                JsonObject json;
-                if (JsonObject::TryParse(wideResponse, json)) {
-                    std::wstring tagName = json.GetNamedString(L"tag_name", L"").c_str();
-                    std::wstring releaseName = json.GetNamedString(L"name", L"").c_str();
-                    std::wstring htmlUrl = json.GetNamedString(L"html_url", L"").c_str();
-
-                    if (!tagName.empty() && is_newer_version(TOASTY_VERSION, tagName)) {
-                        // Print to stderr
-                        std::wcerr << L"Update available: v" << TOASTY_VERSION
-                                   << L" → " << tagName
-                                   << L" (https://github.com/shanselman/toasty/releases)\n";
-
-                        // Show a toast notification about the update
-                        try {
-                            std::wstring updateXml =
-                                L"<toast activationType=\"protocol\" launch=\"https://github.com/shanselman/toasty/releases\">"
-                                L"<visual><binding template=\"ToastGeneric\">"
-                                L"<text>Toasty Update Available</text>"
-                                L"<text>v" + std::wstring(TOASTY_VERSION) + L" → " + tagName + L" — click to download</text>"
-                                L"</binding></visual></toast>";
-
-                            XmlDocument updateDoc;
-                            updateDoc.LoadXml(updateXml);
-                            ToastNotification updateToast(updateDoc);
-                            auto notifier = ToastNotificationManager::CreateToastNotifier(APP_ID);
-                            notifier.Show(updateToast);
-                        } catch (...) {
-                            // Update toast failed — not critical
-                        }
-
-                        updateAvailable = true;
-                    }
-                }
-            }
-        } catch (...) {
-            // JSON parse failed — silently ignore
-        }
-    }
-
-    WinHttpCloseHandle(hRequest);
-    WinHttpCloseHandle(hConnect);
-    WinHttpCloseHandle(hSession);
-    return updateAvailable;
-}
 bool register_protocol() {
     wchar_t exePath[MAX_PATH];
     GetModuleFileNameW(nullptr, exePath, MAX_PATH);
@@ -2150,7 +1969,6 @@ int wmain(int argc, wchar_t* argv[]) {
                 std::wcout << L"[dry-run] ntfy: not configured\n";
             }
 
-            std::wcout << L"[dry-run] Update check: skipped\n";
             return 0;
         }
 
@@ -2159,14 +1977,40 @@ int wmain(int argc, wchar_t* argv[]) {
 
         ToastNotification toast(doc);
 
+        // Register events to know when the toast has been handed off to the
+        // Windows notification platform. Without waiting, the process exits
+        // before the async toast marshaling completes and the toast is
+        // silently dropped (especially on Windows 10).
+        HANDLE toastDoneEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        auto failedToken = toast.Failed([&](auto&&, auto&&) {
+            SetEvent(toastDoneEvent);
+        });
+        auto dismissedToken = toast.Dismissed([&](auto&&, auto&&) {
+            SetEvent(toastDoneEvent);
+        });
+
         auto notifier = ToastNotificationManager::CreateToastNotifier(APP_ID);
         notifier.Show(toast);
 
+        // Pump messages to keep the STA apartment alive while the toast is
+        // being handed off. Exit early on Dismissed/Failed, or after a 2s
+        // timeout fallback.
+        DWORD start = GetTickCount();
+        while (GetTickCount() - start < 2000) {
+            MSG msg;
+            while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+            if (WaitForSingleObject(toastDoneEvent, 50) == WAIT_OBJECT_0) {
+                break;
+            }
+        }
+
+        CloseHandle(toastDoneEvent);
+
         // Send push notification via ntfy if configured (fire-and-forget)
         send_ntfy_notification(title, message);
-
-        // Check for updates (throttled to once per day, non-blocking)
-        check_for_updates();
 
         return 0;
     }

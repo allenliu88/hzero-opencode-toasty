@@ -229,21 +229,6 @@ set TOASTY_NTFY_TOPIC=scotts-coding-notifications
 toasty "Claude finished analysis" --app claude
 ```
 
-## Update Notifications
-
-Toasty automatically checks for new versions once per day. If an update is available, you'll see:
-
-- A message in your terminal: `Update available: v0.3 → v0.4 (https://github.com/shanselman/toasty/releases)`
-- A clickable toast notification that opens the releases page
-
-The check is non-blocking (5-second timeout), throttled to once every 24 hours, and silently skips if offline. It never auto-updates — you download the new version yourself.
-
-Check your current version anytime:
-
-```cmd
-toasty --version
-```
-
 ## Building
 
 Requires Visual Studio 2022 with C++ workload.
